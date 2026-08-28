@@ -1,0 +1,59 @@
+// mayhem/kat_main.go.src — dynamically-linked known-answer probe for LitmusChaos'
+// authentication credential validators. `import "C"` (cgo) forces a DYNAMICALLY
+// LINKED binary so the gate's LD_PRELOAD sabotage shim can neuter it; a
+// statically-linked Go test binary would be immune and give a false-green oracle
+// — exactly the trap netnew §4 warns about with `go test` alone.
+//
+// Staged by mayhem/build.sh into _mayhem_harness/sanitizers/kat/main.go, it
+// imports the staged `utils` package (a verbatim copy of
+// chaoscenter/authentication/pkg/utils/sanitizers.go) and runs SanitizeString /
+// ValidateStrictPassword / ValidateStrictUsername over fixed inputs through the
+// REAL code, printing the decoded results in a fixed, greppable format for
+// mayhem/test.sh to assert. Every expected value below is derived directly from
+// the validation rules in sanitizers.go.
+package main
+
+// #include <stdint.h>
+import "C"
+
+import (
+	"fmt"
+
+	utils "github.com/litmuschaos/litmus/chaoscenter/authentication/_mayhem_harness/sanitizers"
+)
+
+func errStr(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return err.Error()
+}
+
+func b2s(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+func main() {
+	// SanitizeString trims surrounding whitespace.
+	fmt.Printf("KAT_SANITIZE=%s\n", utils.SanitizeString("  hello  "))
+
+	// ValidateStrictPassword: "Aa1@bcde" satisfies all rules (len 8, digit,
+	// lower, upper, special) -> nil.
+	fmt.Printf("KAT_PW_VALID=%s\n", b2s(utils.ValidateStrictPassword("Aa1@bcde") == nil))
+	// "short" is 5 chars -> length rule fires first.
+	fmt.Printf("KAT_PW_SHORT=%s\n", errStr(utils.ValidateStrictPassword("short")))
+	// "aaaaaaaa" has no digit.
+	fmt.Printf("KAT_PW_NODIGIT=%s\n", errStr(utils.ValidateStrictPassword("aaaaaaaa")))
+	// "aaaa1111" has a digit + lowercase but no uppercase.
+	fmt.Printf("KAT_PW_NOUPPER=%s\n", errStr(utils.ValidateStrictPassword("aaaa1111")))
+
+	// ValidateStrictUsername: "abc" (3 chars, starts with letter) is valid.
+	fmt.Printf("KAT_USER_VALID=%s\n", b2s(utils.ValidateStrictUsername("abc") == nil))
+	// "ab" is too short (needs >= 3).
+	fmt.Printf("KAT_USER_SHORT=%s\n", b2s(utils.ValidateStrictUsername("ab") == nil))
+	// "@bad" starts with a disallowed leading character.
+	fmt.Printf("KAT_USER_BAD=%s\n", b2s(utils.ValidateStrictUsername("@bad") == nil))
+}

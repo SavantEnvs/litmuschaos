@@ -1,0 +1,54 @@
+// mayhem/harness_sanitizers.go.src — native testing.F harness for LitmusChaos'
+// authentication credential validators/parsers
+// (chaoscenter/authentication/pkg/utils/sanitizers.go: SanitizeString,
+// ValidateStrictPassword, ValidateStrictUsername). This ports the API surface of
+// upstream's own FuzzSanitizeString (utils_fuzz_test.go), which fuzzes
+// ValidateStrictPassword.
+//
+// WHY a staged mini-module (netnew §6 Go / port-go): litmus is a multi-module
+// monorepo; the authentication module's `package utils` also carries mongo/gRPC/
+// gin helpers (common.go, grpc.go, mongo_database.go, configs.go) that drag in a
+// large dependency closure through the shared module. sanitizers.go, though, is
+// entirely stdlib (crypto/rand + encoding/base64 + fmt + regexp + strings). So
+// mayhem/build.sh copies ONLY that one file (verbatim) into a fresh, standalone
+// single-file Go module at _mayhem_harness/sanitizers and points
+// go-118-fuzz-build there — the harness module's only non-stdlib dep is the
+// go-118-fuzz-build /testing shim itself, and litmus's giant graph is never
+// touched.
+//
+// Declared `package utils` (the copied file's package) so it reaches the
+// validators directly. Byte-in, NO file I/O (netnew §3): the fuzzer's bytes
+// become the validator input; starter seeds are Mayhem's job via the Mayhemfile
+// testsuite: directive.
+package utils
+
+import "testing"
+
+// FuzzSanitizers drives all three credential validators/parsers with an arbitrary
+// string. They must never panic on any input — including empty strings, invalid
+// UTF-8, and pathological regex inputs.
+func FuzzSanitizers(f *testing.F) {
+	f.Add("Aa1@bcde")
+	f.Add("short")
+	f.Add("aaaaaaaa")
+	f.Add("aaaa1111")
+	f.Add("1234567@")
+	f.Add("thisisaverylongpassword1234")
+	f.Add("  trim me  ")
+	f.Add("abc")
+	f.Add("@bad")
+	f.Add("user.name@example.com")
+	f.Add("")
+
+	f.Fuzz(func(t *testing.T, data string) {
+		// SanitizeString must be idempotent: sanitizing an already-sanitized
+		// string yields the same value.
+		s := SanitizeString(data)
+		if SanitizeString(s) != s {
+			t.Fatalf("SanitizeString not idempotent for %q", data)
+		}
+		// Validators must be panic-free regardless of outcome.
+		_ = ValidateStrictPassword(data)
+		_ = ValidateStrictUsername(data)
+	})
+}
