@@ -1,0 +1,116 @@
+// mayhem/harness_serverversion.go.src — native testing.F harness for LitmusChaos' GraphQL server
+// chaoscenter/graphql/server/pkg/chaos_infrastructure/service.go: infraService.QueryServerVersion.
+//
+// QueryServerVersion reads the "version" document from the server-config collection through
+// mongodb.Operator (config.GetConfig) and returns its key and string value. The fuzzer's bytes pick what
+// the database answers: no document, a driver error, a null value, or a value of some BSON type. The
+// service must answer with a ServerVersionResponse or an error — never panic — and may only succeed
+// when the stored value is the string it was given.
+//
+// build.sh copies this file into the server module as package serverversion (declared in the module so
+// the repo's internal packages resolve, never committed to upstream's tree).
+package serverversion
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	fuzz "github.com/AdaLogics/go-fuzz-headers"
+	"github.com/litmuschaos/litmus/chaoscenter/graphql/server/pkg/chaos_infrastructure"
+	"github.com/litmuschaos/litmus/chaoscenter/graphql/server/pkg/database/mongodb"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+)
+
+type configOperator struct {
+	mongodb.MongoOperator
+	res *mongo.SingleResult
+	err error
+}
+
+func (o configOperator) Get(ctx context.Context, collectionType int, query bson.D) (*mongo.SingleResult, error) {
+	return o.res, o.err
+}
+
+func document(value interface{}) *mongo.SingleResult {
+	return mongo.NewSingleResultFromDocument(bson.D{{Key: "key", Value: "version"}, {Key: "value", Value: value}}, nil, nil)
+}
+
+// The testing.F shim hands f.Fuzz's []byte argument over as consumer.GetBytes() of the raw input:
+// a 4-byte big-endian length, then the bytes. The first of those bytes picks what the database answers,
+// the rest feed go-fuzz-headers' consumer (GetString: 4-byte length + bytes; GetInt: 1 byte).
+func FuzzQueryServerVersion(f *testing.F) {
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) == 0 {
+			return
+		}
+		c := fuzz.NewConsumer(data[1:])
+
+		op := configOperator{}
+		var value interface{}
+		switch data[0] % 9 {
+		case 0: // the "version" key is absent
+			op.res = mongo.NewSingleResultFromDocument(bson.D{}, mongo.ErrNoDocuments, nil)
+		case 1: // the driver fails
+			op.err = errors.New("mongo unavailable")
+		case 2:
+			op.res = document(nil)
+		case 3:
+			s, err := c.GetString()
+			if err != nil {
+				return
+			}
+			value = s
+			op.res = document(s)
+		case 4:
+			n, err := c.GetInt()
+			if err != nil {
+				return
+			}
+			value = n
+			op.res = document(n)
+		case 5:
+			x, err := c.GetFloat64()
+			if err != nil {
+				return
+			}
+			value = x
+			op.res = document(x)
+		case 6:
+			b, err := c.GetBool()
+			if err != nil {
+				return
+			}
+			value = b
+			op.res = document(b)
+		case 7:
+			b, err := c.GetBytes()
+			if err != nil {
+				return
+			}
+			value = b
+			op.res = document(b)
+		case 8:
+			s, err := c.GetString()
+			if err != nil {
+				return
+			}
+			value = s
+			op.res = document(bson.D{{Key: "version", Value: s}})
+		}
+
+		saved := mongodb.Operator
+		mongodb.Operator = op
+		defer func() { mongodb.Operator = saved }()
+
+		resp, err := chaos_infrastructure.NewChaosInfrastructureService(nil, nil).QueryServerVersion(context.Background())
+		if err != nil {
+			return
+		}
+		want, isString := value.(string)
+		if resp == nil || !isString || data[0]%9 != 3 || resp.Key != "version" || resp.Value != want {
+			t.Fatalf("QueryServerVersion succeeded for kind %d with %+v", data[0]%9, resp)
+		}
+	})
+}
