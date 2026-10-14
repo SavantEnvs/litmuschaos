@@ -1,0 +1,8 @@
+project: savantenvs/litmuschaos
+target: fuzz_serverversion-mined-b04ae3f
+testsuite:
+  - https://$MAYHEM_DOMAIN/$MAYHEM_PROJECT/$MAYHEM_TARGET/testsuite.tar
+  - file://mayhem/fuzz_serverversion-mined-b04ae3f/testsuite
+cmds:
+  - cmd: /mayhem/fuzz_serverversion
+    libfuzzer: true
