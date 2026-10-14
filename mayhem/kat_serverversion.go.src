@@ -1,0 +1,49 @@
+// mayhem/kat_serverversion.go.src — known-answer probe for QueryServerVersion (mayhem/test.sh runs it).
+// Dynamically linked (cgo), so the gate's sabotage shim can neuter it.
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/litmuschaos/litmus/chaoscenter/graphql/server/pkg/chaos_infrastructure"
+	"github.com/litmuschaos/litmus/chaoscenter/graphql/server/pkg/database/mongodb"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+)
+
+type configOperator struct {
+	mongodb.MongoOperator
+	res *mongo.SingleResult
+	err error
+}
+
+func (o configOperator) Get(ctx context.Context, collectionType int, query bson.D) (*mongo.SingleResult, error) {
+	return o.res, o.err
+}
+
+func query(label string, op configOperator) {
+	mongodb.Operator = op
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("KAT_%s=panic\n", label)
+		}
+	}()
+	resp, err := chaos_infrastructure.NewChaosInfrastructureService(nil, nil).QueryServerVersion(context.Background())
+	if err != nil {
+		fmt.Printf("KAT_%s=error: %v\n", label, err)
+		return
+	}
+	fmt.Printf("KAT_%s=ok %s/%s\n", label, resp.Key, resp.Value)
+}
+
+func main() {
+	doc := func(v interface{}) *mongo.SingleResult {
+		return mongo.NewSingleResultFromDocument(bson.D{{Key: "key", Value: "version"}, {Key: "value", Value: v}}, nil, nil)
+	}
+	query("VERSION", configOperator{res: doc("3.1.0")})
+	query("DBERR", configOperator{err: errors.New("boom")})
+	query("ABSENT", configOperator{res: mongo.NewSingleResultFromDocument(nil, mongo.ErrNoDocuments, nil)})
+	query("NONSTRING", configOperator{res: doc(int32(7))})
+}
